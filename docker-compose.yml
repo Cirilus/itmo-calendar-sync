@@ -1,0 +1,66 @@
+services:
+  app:
+    build:
+      context: .
+    restart: unless-stopped
+    env_file:
+      - ${ENV_FILE:-.env}
+    environment:
+      LISTEN_ADDR: 0.0.0.0:3000
+      TELEGRAM_PROXY_URL: http://xray:1080
+      VIRTUAL_HOST: "${PUBLIC_IP}.sslip.io"
+      VIRTUAL_PORT: "3000"
+      LETSENCRYPT_HOST: "${PUBLIC_IP}.sslip.io"
+      LETSENCRYPT_EMAIL: "${ACME_EMAIL}"
+      HTTPS_METHOD: redirect
+    depends_on:
+      xray:
+        condition: service_started
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/itmo-calendar-sync", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  xray:
+    image: ghcr.io/xtls/xray-core:26.6.1
+    restart: unless-stopped
+    volumes:
+      - ./secrets/xray-client.json:/usr/local/etc/xray/05_client.json:ro
+
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy:1.11.6
+    container_name: itmo-calendar-nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    labels:
+      - "com.github.nginx-proxy.nginx"
+    volumes:
+      - proxy_certs:/etc/nginx/certs:ro
+      - proxy_html:/usr/share/nginx/html
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+
+  acme-companion:
+    image: nginxproxy/acme-companion:2.8.2
+    container_name: itmo-calendar-acme
+    restart: unless-stopped
+    environment:
+      DEFAULT_EMAIL: "${ACME_EMAIL}"
+    depends_on:
+      nginx-proxy:
+        condition: service_started
+    volumes:
+      - proxy_certs:/etc/nginx/certs:rw
+      - proxy_html:/usr/share/nginx/html:rw
+      - acme_state:/etc/acme.sh
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  proxy_certs:
+  proxy_html:
+  acme_state:

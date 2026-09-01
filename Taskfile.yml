@@ -1,0 +1,140 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Показать доступные команды
+    cmds:
+      - task --list
+
+  init:
+    desc: Создать локальные конфиги из примеров, не перезаписывая существующие
+    cmds:
+      - test -f .env || cp .env.example .env
+      - test -f secrets/xray-client.json || cp secrets/xray-client.example.json secrets/xray-client.json
+
+  fmt:
+    desc: Отформатировать Rust-код
+    cmds:
+      - cargo fmt
+
+  check:
+    desc: Выполнить проверки Rust и Docker Compose
+    cmds:
+      - cargo fmt --check
+      - cargo clippy --all-targets --all-features -- -D warnings
+      - cargo test
+      - task compose:check
+
+  compose:check:
+    desc: Проверить оба Compose-файла на примерах окружения
+    cmds:
+      - ENV_FILE=.env.example docker compose --env-file .env.example -f docker-compose.local.yml config --quiet
+      - ENV_FILE=.env.example docker compose --env-file .env.example config --quiet
+
+  build:
+    desc: Собрать debug-версию
+    cmds:
+      - cargo build
+
+  run:
+    aliases: [dev]
+    desc: Запустить Rust-сервис напрямую на localhost
+    dotenv:
+      - .env
+    preconditions:
+      - sh: test -f .env
+        msg: Сначала выполните task init и заполните .env
+    cmds:
+      - cargo run
+
+  itmo:api:
+    desc: Проверить авторизацию и API расписания ИТМО
+    dotenv:
+      - .env
+    preconditions:
+      - sh: test -f .env
+        msg: Сначала выполните task init и заполните .env
+    cmds:
+      - cargo run -- fetch-api itmo-api.json
+
+  itmo:ics:
+    desc: Преобразовать сохранённый ответ API ИТМО в ICS без сети
+    preconditions:
+      - sh: test -f itmo-api.json
+        msg: Сначала выполните task itmo:api или положите ответ API в itmo-api.json
+    cmds:
+      - cargo run -- convert-ics itmo-api.json schedule.ics
+
+  itmo:e2e:
+    desc: Получить ответ API ИТМО и сразу преобразовать его в ICS
+    cmds:
+      - task itmo:api
+      - task itmo:ics
+
+  local:config:
+    desc: Проверить локальный Docker Compose
+    preconditions:
+      - sh: test -f .env
+        msg: Сначала выполните task init и заполните .env
+    cmds:
+      - docker compose -f docker-compose.local.yml config
+
+  local:up:
+    desc: Собрать и запустить локальный контейнер приложения
+    preconditions:
+      - sh: test -f .env
+        msg: Сначала выполните task init и заполните .env
+    cmds:
+      - docker compose -f docker-compose.local.yml up --build -d
+
+  local:logs:
+    desc: Показать логи локального контейнера
+    cmds:
+      - docker compose -f docker-compose.local.yml logs -f app
+
+  local:down:
+    desc: Остановить локальный контейнер
+    cmds:
+      - docker compose -f docker-compose.local.yml down
+
+  health:
+    desc: Проверить локальный health endpoint
+    cmds:
+      - curl --fail --show-error http://127.0.0.1:3000/health
+
+  calendar:
+    desc: Скачать локальный календарь в schedule.ics
+    dotenv:
+      - .env
+    preconditions:
+      - sh: test -f .env
+        msg: Сначала выполните task init и заполните .env
+    cmds:
+      - curl --fail --show-error --output schedule.ics "http://127.0.0.1:3000/calendar/$CALENDAR_TOKEN.ics"
+      - echo "Календарь сохранён в schedule.ics"
+
+  prod:config:
+    desc: Проверить production Docker Compose
+    preconditions:
+      - sh: test -f .env
+        msg: Сначала выполните task init и заполните .env
+      - sh: test -f secrets/xray-client.json
+        msg: Заполните secrets/xray-client.json
+    cmds:
+      - docker compose config
+
+  prod:up:
+    desc: Собрать и запустить production-стек
+    deps: [prod:config]
+    cmds:
+      - docker compose up --build -d
+
+  prod:logs:
+    desc: Показать логи production-стека
+    cmds:
+      - docker compose logs -f
+
+  prod:down:
+    desc: Остановить production-стек
+    cmds:
+      - docker compose down

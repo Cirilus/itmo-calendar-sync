@@ -1,0 +1,7 @@
+/target
+.env
+itmo-api.json
+schedule.ics
+secrets/xray-client.json
+.DS_Store
+*.log
