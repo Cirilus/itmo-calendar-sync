@@ -7,7 +7,6 @@ services:
       - ${ENV_FILE:-.env}
     environment:
       LISTEN_ADDR: 0.0.0.0:3000
-      TELEGRAM_PROXY_URL: http://xray:1080
       VIRTUAL_HOST: "${PUBLIC_IP}.sslip.io"
       VIRTUAL_PORT: "3000"
       LETSENCRYPT_HOST: "${PUBLIC_IP}.sslip.io"
