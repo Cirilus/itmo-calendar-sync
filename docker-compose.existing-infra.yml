@@ -1,0 +1,11 @@
+services:
+  app:
+    environment:
+      TELEGRAM_PROXY_URL: http://inner-voice-llm-proxy:8080
+    networks:
+      - existing-infra
+
+networks:
+  existing-infra:
+    external: true
+    name: ${INFRA_NETWORK}

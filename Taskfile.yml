@@ -26,10 +26,11 @@ tasks:
       - task compose:check
 
   compose:check:
-    desc: Проверить оба Compose-файла на примерах окружения
+    desc: Проверить local Compose и оба production-режима
     cmds:
       - ENV_FILE=.env.example docker compose --env-file .env.example -f docker-compose.local.yml config --quiet
       - ENV_FILE=.env.example docker compose --env-file .env.example config --quiet
+      - INFRA_NETWORK=infra_default ENV_FILE=.env.example docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.existing-infra.yml config --quiet
 
   build:
     desc: Собрать debug-версию
@@ -114,7 +115,7 @@ tasks:
       - echo "Календарь сохранён в schedule.ics"
 
   prod:config:
-    desc: Проверить production Docker Compose
+    desc: Проверить production Compose с собственной инфраструктурой
     preconditions:
       - sh: test -f .env
         msg: Сначала выполните task init и заполните .env
@@ -123,8 +124,23 @@ tasks:
     cmds:
       - docker compose config
 
-  prod:up:
-    desc: Собрать и запустить production-стек
+  prod:up:no-infra:
+    desc: Запустить только приложение в существующей инфраструктуре
+    dotenv:
+      - .env
+    preconditions:
+      - sh: test -f .env
+        msg: Сначала выполните task init и заполните .env
+      - sh: test -n "$INFRA_NETWORK"
+        msg: Укажите INFRA_NETWORK в .env
+      - sh: docker network inspect "$INFRA_NETWORK" >/dev/null
+        msg: Docker-сеть из INFRA_NETWORK не найдена
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.existing-infra.yml config --quiet
+      - docker compose -f docker-compose.yml -f docker-compose.existing-infra.yml up --build -d --no-deps app
+
+  prod:up:with-infra:
+    desc: Собрать и запустить приложение с собственной инфраструктурой
     deps: [prod:config]
     cmds:
       - docker compose up --build -d
