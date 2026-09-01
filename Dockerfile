@@ -7,13 +7,13 @@ RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 10001 app
+COPY --from=builder \
+    /etc/ssl/certs/ca-certificates.crt \
+    /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder \
+    /build/target/release/itmo-calendar-sync \
+    /usr/local/bin/itmo-calendar-sync
 
-COPY --from=builder /build/target/release/itmo-calendar-sync /usr/local/bin/itmo-calendar-sync
-
-USER app
+USER 10001:10001
 EXPOSE 3000
 ENTRYPOINT ["/usr/local/bin/itmo-calendar-sync"]
