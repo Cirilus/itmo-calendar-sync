@@ -23,6 +23,11 @@ struct CachedToken {
     valid_until: Instant,
 }
 
+enum AuthorizationResponse {
+    LoginPage(reqwest::Response),
+    Callback(Url),
+}
+
 pub struct AuthClient {
     http: Client,
     username: String,
@@ -86,8 +91,8 @@ impl AuthClient {
         let state = URL_SAFE_NO_PAD.encode(state_bytes);
 
         let authorization_url = format!("{PROVIDER}/protocol/openid-connect/auth");
-        let response = self
-            .get_following_redirects(self.http.get(authorization_url).query(&[
+        let authorization = self
+            .follow_authorization_redirects(self.http.get(authorization_url).query(&[
                 ("protocol", "oauth2".to_owned()),
                 ("response_type", "code".to_owned()),
                 ("client_id", CLIENT_ID.to_owned()),
@@ -99,63 +104,49 @@ impl AuthClient {
             ]))
             .await?;
 
-        if !response.status().is_success() {
-            return Err(any_error(format!(
-                "ITMO authorization page returned {}",
-                response.status()
-            )));
-        }
+        let redirect = match authorization {
+            AuthorizationResponse::Callback(redirect) => redirect,
+            AuthorizationResponse::LoginPage(response) => {
+                if !response.status().is_success() {
+                    return Err(any_error(format!(
+                        "ITMO authorization page returned {}",
+                        response.status()
+                    )));
+                }
 
-        let page = response.text().await?;
-        let login_action = extract_login_action(&page)?;
+                let page = response.text().await?;
+                let login_action = extract_login_action(&page)?;
 
-        let login_response = self
-            .http
-            .post(login_action)
-            .header(USER_AGENT, "itmo-calendar-sync/0.1")
-            .form(&[
-                ("username", self.username.as_str()),
-                ("password", self.password.as_str()),
-                ("credentialId", ""),
-            ])
-            .send()
-            .await?;
+                let login_response = self
+                    .http
+                    .post(login_action)
+                    .header(USER_AGENT, "itmo-calendar-sync/0.1")
+                    .form(&[
+                        ("username", self.username.as_str()),
+                        ("password", self.password.as_str()),
+                        ("credentialId", ""),
+                    ])
+                    .send()
+                    .await?;
 
-        if !matches!(
-            login_response.status(),
-            StatusCode::FOUND | StatusCode::SEE_OTHER | StatusCode::TEMPORARY_REDIRECT
-        ) {
-            return Err(any_error(
-                "ITMO login was rejected; check the username, password, or required login action",
-            ));
-        }
+                if !matches!(
+                    login_response.status(),
+                    StatusCode::FOUND | StatusCode::SEE_OTHER | StatusCode::TEMPORARY_REDIRECT
+                ) {
+                    return Err(any_error(
+                        "ITMO login was rejected; check the username, password, or required login action",
+                    ));
+                }
 
-        let location = login_response
-            .headers()
-            .get(LOCATION)
-            .ok_or_else(|| any_error("ITMO login response has no redirect location"))?
-            .to_str()
-            .map_err(|_| any_error("ITMO login redirect is not valid text"))?;
-
-        let redirect = Url::parse(location)
-            .or_else(|_| login_response.url().join(location))
-            .map_err(|error| any_error(format!("invalid ITMO login redirect: {error}")))?;
-
-        let mut code = None;
-        let mut returned_state = None;
-        for (key, value) in redirect.query_pairs() {
-            match key.as_ref() {
-                "code" => code = Some(value.into_owned()),
-                "state" => returned_state = Some(value.into_owned()),
-                _ => {}
+                redirect_url(&login_response)?
             }
+        };
+
+        if !is_login_callback(&redirect) {
+            return Err(any_error("ITMO login returned an unexpected redirect"));
         }
 
-        if returned_state.as_deref() != Some(state.as_str()) {
-            return Err(any_error("ITMO login returned an invalid OAuth state"));
-        }
-
-        let code = code.ok_or_else(|| any_error("ITMO login returned no authorization code"))?;
+        let code = extract_authorization_code(&redirect, &state)?;
         let token_url = format!("{PROVIDER}/protocol/openid-connect/token");
         let token_response = self
             .http
@@ -180,26 +171,21 @@ impl AuthClient {
         Ok(token_response.json::<TokenResponse>().await?)
     }
 
-    async fn get_following_redirects(
+    async fn follow_authorization_redirects(
         &self,
         mut request: reqwest::RequestBuilder,
-    ) -> Result<reqwest::Response, AnyError> {
+    ) -> Result<AuthorizationResponse, AnyError> {
         for _ in 0..10 {
             let response = request.send().await?;
             if !response.status().is_redirection() {
-                return Ok(response);
+                return Ok(AuthorizationResponse::LoginPage(response));
             }
 
-            let location = response
-                .headers()
-                .get(LOCATION)
-                .ok_or_else(|| any_error("ITMO redirect has no location"))?
-                .to_str()
-                .map_err(|_| any_error("ITMO redirect location is not valid text"))?;
-            let next_url = response
-                .url()
-                .join(location)
-                .map_err(|error| any_error(format!("invalid ITMO redirect: {error}")))?;
+            let next_url = redirect_url(&response)?;
+            if is_login_callback(&next_url) {
+                return Ok(AuthorizationResponse::Callback(next_url));
+            }
+
             request = self.http.get(next_url);
         }
 
@@ -211,6 +197,44 @@ impl AuthClient {
 struct TokenResponse {
     access_token: String,
     expires_in: u64,
+}
+
+fn redirect_url(response: &reqwest::Response) -> Result<Url, AnyError> {
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .ok_or_else(|| any_error("ITMO redirect has no location"))?
+        .to_str()
+        .map_err(|_| any_error("ITMO redirect location is not valid text"))?;
+
+    Url::parse(location)
+        .or_else(|_| response.url().join(location))
+        .map_err(|error| any_error(format!("invalid ITMO redirect: {error}")))
+}
+
+fn is_login_callback(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some("my.itmo.ru")
+        && url.port_or_known_default() == Some(443)
+        && url.path() == "/login/callback"
+}
+
+fn extract_authorization_code(redirect: &Url, expected_state: &str) -> Result<String, AnyError> {
+    let mut code = None;
+    let mut returned_state = None;
+    for (key, value) in redirect.query_pairs() {
+        match key.as_ref() {
+            "code" => code = Some(value.into_owned()),
+            "state" => returned_state = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    if returned_state.as_deref() != Some(expected_state) {
+        return Err(any_error("ITMO login returned an invalid OAuth state"));
+    }
+
+    code.ok_or_else(|| any_error("ITMO login returned no authorization code"))
 }
 
 fn extract_login_action(page: &str) -> Result<String, AnyError> {
@@ -227,4 +251,72 @@ fn extract_login_action(page: &str) -> Result<String, AnyError> {
         .map_err(|_| any_error("ITMO login form address could not be decoded"))?;
 
     Ok(decoded.replace("&amp;", "&"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_authorization_code, extract_login_action, is_login_callback};
+    use reqwest::Url;
+
+    #[test]
+    fn extracts_login_action_from_current_page_format() {
+        let page = r#"{
+            "url": {
+                "loginAction": "https:\/\/id.itmo.ru\/auth\/realms\/itmo\/login-actions\/authenticate?session_code=abc&amp;execution=def"
+            }
+        }"#;
+
+        let action = extract_login_action(page).expect("login action must be parsed");
+
+        assert_eq!(
+            action,
+            "https://id.itmo.ru/auth/realms/itmo/login-actions/authenticate?session_code=abc&execution=def"
+        );
+    }
+
+    #[test]
+    fn accepts_direct_sso_callback() {
+        let callback = Url::parse(
+            "https://my.itmo.ru/login/callback?session_state=session&state=expected&code=auth-code",
+        )
+        .expect("callback URL must be valid");
+
+        assert!(is_login_callback(&callback));
+        assert_eq!(
+            extract_authorization_code(&callback, "expected")
+                .expect("authorization code must be parsed"),
+            "auth-code"
+        );
+    }
+
+    #[test]
+    fn rejects_callback_with_wrong_state() {
+        let callback = Url::parse("https://my.itmo.ru/login/callback?state=wrong&code=auth-code")
+            .expect("callback URL must be valid");
+
+        let error = extract_authorization_code(&callback, "expected")
+            .expect_err("wrong state must be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "ITMO login returned an invalid OAuth state"
+        );
+    }
+
+    #[test]
+    fn rejects_lookalike_callback_host() {
+        let callback =
+            Url::parse("https://my.itmo.ru.attacker.example/login/callback?state=x&code=y")
+                .expect("callback URL must be valid");
+
+        assert!(!is_login_callback(&callback));
+    }
+
+    #[test]
+    fn rejects_wrong_callback_path() {
+        let callback = Url::parse("https://my.itmo.ru/login/callback/extra?state=x&code=y")
+            .expect("callback URL must be valid");
+
+        assert!(!is_login_callback(&callback));
+    }
 }
