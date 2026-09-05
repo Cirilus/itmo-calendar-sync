@@ -110,6 +110,8 @@ pub struct Lesson {
     pub group: Option<String>,
     #[serde(default, deserialize_with = "optional_string")]
     pub note: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    pub zoom_url: Option<String>,
 }
 
 fn academic_year_range() -> Result<(NaiveDate, NaiveDate), AnyError> {
@@ -192,7 +194,8 @@ mod tests {
                     "room": "101",
                     "teacher_name": "Иванов И. И.",
                     "group": "M0000",
-                    "note": null
+                    "note": null,
+                    "zoom_url": "https://itmo.ktalk.ru/flow_92727"
                 }]
             }]
         }"#;
@@ -203,5 +206,9 @@ mod tests {
         assert_eq!(days[0].lessons.len(), 1);
         assert_eq!(days[0].lessons[0].id.as_deref(), Some("42"));
         assert_eq!(days[0].lessons[0].subject, "Математика");
+        assert_eq!(
+            days[0].lessons[0].zoom_url.as_deref(),
+            Some("https://itmo.ktalk.ru/flow_92727")
+        );
     }
 }

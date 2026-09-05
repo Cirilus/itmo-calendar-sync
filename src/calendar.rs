@@ -66,6 +66,8 @@ fn append_event(
         .collect::<Vec<_>>()
         .join(", ");
 
+    let online_url = web_url(lesson.zoom_url.as_deref());
+
     let mut details = Vec::new();
     add_detail(&mut details, "Тип", lesson.lesson_type.as_deref());
     add_detail(
@@ -74,6 +76,7 @@ fn append_event(
         lesson.teacher_name.as_deref(),
     );
     add_detail(&mut details, "Группа", lesson.group.as_deref());
+    add_detail(&mut details, "Онлайн", online_url);
     add_detail(&mut details, "Примечание", lesson.note.as_deref());
 
     push_line(output, "BEGIN:VEVENT");
@@ -95,6 +98,9 @@ fn append_event(
 
     if !location.is_empty() {
         push_line(output, &format!("LOCATION:{}", escape_text(&location)));
+    }
+    if let Some(url) = online_url {
+        push_line(output, &format!("URL:{url}"));
     }
     if !details.is_empty() {
         push_line(
@@ -145,6 +151,15 @@ fn add_detail(target: &mut Vec<String>, label: &str, value: Option<&str>) {
     }
 }
 
+fn web_url(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| {
+        (value.starts_with("https://") || value.starts_with("http://"))
+            && !value
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n'))
+    })
+}
+
 fn escape_text(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -171,10 +186,37 @@ fn push_line(output: &mut String, line: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::escape_text;
+    use super::{build_calendar, escape_text};
+    use crate::itmo::{Lesson, ScheduleDay};
 
     #[test]
     fn escapes_ical_text() {
         assert_eq!(escape_text("A, B; C\\D\nE"), "A\\, B\\; C\\\\D\\nE");
+    }
+
+    #[test]
+    fn includes_online_lesson_url() {
+        let days = [ScheduleDay {
+            date: "2026-09-08".to_owned(),
+            lessons: vec![Lesson {
+                id: Some("48148349195".to_owned()),
+                subject: "Анализ данных для принятия управленческих решений".to_owned(),
+                lesson_type: Some("Лекции".to_owned()),
+                time_start: "18:50".to_owned(),
+                time_end: "20:20".to_owned(),
+                building: None,
+                room: None,
+                teacher_name: Some("Адамчик Александр Станиславович".to_owned()),
+                group: Some("АДПУР УВБ 1".to_owned()),
+                note: None,
+                zoom_url: Some("https://itmo.ktalk.ru/flow_92727".to_owned()),
+            }],
+        }];
+
+        let calendar = build_calendar(&days).expect("calendar must be generated");
+        let unfolded = calendar.replace("\r\n ", "");
+
+        assert!(unfolded.contains("URL:https://itmo.ktalk.ru/flow_92727\r\n"));
+        assert!(unfolded.contains("Онлайн: https://itmo.ktalk.ru/flow_92727"));
     }
 }
